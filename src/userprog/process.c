@@ -88,6 +88,7 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
+  // for(;;); // FIXME: 디버깅용 프로세스 블로킹
   return -1;
 }
 
@@ -221,11 +222,29 @@ load (const char *file_name, void (**eip) (void), void **esp)
     goto done;
   process_activate ();
 
+
+  char *fn_copy;
+  fn_copy = palloc_get_page (0);
+  if (fn_copy == NULL) 
+    goto done;
+  strlcpy(fn_copy, file_name, PGSIZE);
+
+  char *token, *save_ptr;
+  char *argv[128];
+  int argc = 0;
+
+  for (token = strtok_r(fn_copy, " ", &save_ptr); token != NULL;
+       token = strtok_r(NULL, " ", &save_ptr)) {
+    argv[argc++] = token;
+  }
+
+  char *program_name = argv[0];
+  
   /* Open executable file. */
-  file = filesys_open (file_name);
+  file = filesys_open (program_name);
   if (file == NULL) 
     {
-      printf ("load: %s: open failed\n", file_name);
+      printf ("load: %s: open failed\n", program_name);
       goto done; 
     }
 
@@ -238,7 +257,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
       || ehdr.e_phnum > 1024) 
     {
-      printf ("load: %s: error loading executable\n", file_name);
+      printf ("load: %s: error loading executable\n", program_name);
       goto done; 
     }
 
@@ -304,6 +323,52 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* Set up stack. */
   if (!setup_stack (esp))
     goto done;
+
+  // printf("Initial esp: %p\n", *esp);
+
+  // 인자들을 역순으로 스택에 푸시
+  for (int i = argc - 1; i >= 0; --i) {
+    int len = strlen(argv[i]) + 1;
+    *esp -= len; // 문자열 길이 + 널 종료 문자(1)만큼 스택 포인터를 내림
+    memcpy(*esp, argv[i], len); // 스택에 문자열을 복사
+    argv[i] = *esp; // argv 배열 포인터를 스택에 복사된 문자열의 주소로 업데이트
+  }
+  
+  // 스택 포인터를 4바이트(워드) 경계에 맞게 정렬
+  uintptr_t esp_uint = (uintptr_t) *esp; 
+  esp_uint &= 0xfffffffc; // 4바이트 정렬
+  *esp = (void *) esp_uint;
+
+  // argv 배열의 마지막 요소(NULL 포인터 센티널)을 스택에 푸시
+  *esp -= sizeof (char *);
+  *(char ***) *esp = NULL; 
+
+  // 인자 주소들을 역순으로 스택에 푸시
+  for (int i = argc - 1; i >= 0; --i) {
+    *esp -= sizeof (char *);
+    *(char **) *esp = argv[i];
+  }
+
+  // argv 배열의 시작 주소를 푸시
+  char **argv_base = (char **) *esp;
+  *esp -= sizeof (char **); 
+  *(char ***) *esp = argv_base;
+
+  // argc(인자 개수) 푸시
+  *esp -= sizeof (int); 
+  *(int *) *esp = argc;
+
+  // 가짜 반환 주소 푸시
+  *esp -= sizeof (void *); 
+  *(void **) *esp = 0; 
+
+  // printf("Final esp: %p\n", *esp);
+
+  // FIXME: 디버깅용 스택 덤프 출력
+  // printf("--- Stack dump after Argument Passing ---\n");
+  // hex_dump((uintptr_t)*esp, *esp, PHYS_BASE - *esp, true); 
+  // printf("-----------------------------------------\n");
+
 
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
@@ -441,6 +506,7 @@ setup_stack (void **esp)
       else
         palloc_free_page (kpage);
     }
+
   return success;
 }
 
