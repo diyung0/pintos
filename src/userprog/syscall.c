@@ -89,6 +89,19 @@ syscall_handler (struct intr_frame *f UNUSED)
         f->eax = write (fd, buffer, size);
       }
       break;
+
+    case SYS_FIBONACCI:
+      check_valid_uaddr (esp + 1);
+      f->eax = fibonacci(*(esp + 1));
+      break;
+
+    case SYS_MAX_OF_FOUR_INT:
+      check_valid_uaddr (esp + 1);
+      check_valid_uaddr (esp + 2);
+      check_valid_uaddr (esp + 3);
+      check_valid_uaddr (esp + 4);
+      f->eax = max_of_four_int(*(esp + 1), *(esp + 2), *(esp + 3), *(esp + 4));
+      break;
     
     default:
       exit (-1);
@@ -130,4 +143,23 @@ int write (int fd, const void *buffer, unsigned size) {
     return size;
   }
   return -1;
+}
+
+int fibonacci (int n) {
+  if (n <= 1) return n;
+  int prev = 0, cur = 1;
+  for(int i = 2; i<= n; i++) {
+    int next = prev + cur;
+    prev = cur;
+    cur = next;
+  }
+  return cur;
+}
+
+int max_of_four_int (int a, int b, int c, int d) {
+  int ans = a;
+  if(b > ans) ans = b;
+  if(c > ans) ans = c;
+  if(d > ans) ans = d;
+  return ans;
 }
