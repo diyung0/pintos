@@ -38,10 +38,33 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  char program_name[128];
+  char *save_ptr;
+  strlcpy(program_name, file_name, 128);
+  strtok_r(program_name, " ", &save_ptr);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
-  if (tid == TID_ERROR)
+  tid = thread_create (program_name, PRI_DEFAULT, start_process, fn_copy);
+  if (tid == TID_ERROR) {
     palloc_free_page (fn_copy); 
+    return TID_ERROR;
+  }
+
+  struct thread *child = get_child_thread(tid);
+  if(child == NULL) {
+    palloc_free_page(fn_copy);
+    return TID_ERROR;
+  }
+
+  // 자식의 load() 완료를 기다림
+  sema_down(&child->load_sema);
+
+  if (child->exit_status == -1) {
+    list_remove(&child->child_elem);
+    palloc_free_page(child);
+    return TID_ERROR;
+  }
+
   return tid;
 }
 
@@ -53,6 +76,7 @@ start_process (void *file_name_)
   char *file_name = file_name_;
   struct intr_frame if_;
   bool success;
+  struct thread *cur = thread_current();
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -60,11 +84,17 @@ start_process (void *file_name_)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
-
+  
   /* If load failed, quit. */
   palloc_free_page (file_name);
-  if (!success) 
+  if (!success) {
+    cur->exit_status = -1;
+    sema_up(&cur->load_sema); // 로드 실패 알림
     thread_exit ();
+  }
+
+  // 로드 성공 시 부모에게 알림
+  sema_up(&cur->load_sema);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -88,8 +118,19 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  // for(;;); // FIXME: 디버깅용 프로세스 블로킹
-  return -1;
+  struct thread *child;
+  int exit_status;
+
+  child = get_child_thread(child_tid);
+  if(child == NULL || child->is_waited) return -1;
+
+  child->is_waited = true;
+  sema_down(&(child->wait_sema)); // 자식이 종료될 때까지 대기
+  exit_status = child->exit_status; 
+  list_remove(&(child->child_elem)); // 자식을 child_list에서 제거
+  palloc_free_page(child);
+
+  return exit_status;
 }
 
 /* Free the current process's resources. */
@@ -98,6 +139,24 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  // exit status 출력
+  printf("%s: exit(%d)\n", cur->name, cur->exit_status);
+
+  // 부모가 wait 중이면 깨워줌
+  if (cur->parent != NULL) {
+    sema_up(&cur->wait_sema);
+  }
+
+  // 자식들 처리
+  struct list_elem *e = list_begin(&cur->child_list);
+  while (e != list_end(&cur->child_list)) { 
+    struct thread *child = list_entry(e, struct thread, child_elem);
+    struct list_elem *next_e = list_next(e); 
+    list_remove(e); 
+    child->parent = NULL;
+    e = next_e;
+  }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */

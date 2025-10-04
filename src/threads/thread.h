@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "synch.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -96,6 +97,14 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+
+    int exit_status; // 프로세스 종료 상태
+    struct thread* parent; // 부모 스레드 포인터
+    struct list child_list; // 자식 프로세스 리스트
+    struct list_elem child_elem; // 부모의 child_list에 연결될 요소
+    struct semaphore load_sema; // 로드 성공 여부 동기화
+    struct semaphore wait_sema; // 프로세스 종료 동기화
+    bool is_waited; // 이미 wait 되었는지 표시
 #endif
 
     /* Owned by thread.c. */
@@ -137,5 +146,7 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+struct thread* get_child_thread(tid_t tid);
 
 #endif /* threads/thread.h */

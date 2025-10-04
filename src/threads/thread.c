@@ -183,6 +183,11 @@ thread_create (const char *name, int priority,
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
 
+#ifdef USERPROG
+  t->parent = thread_current ();
+  list_push_back(&thread_current()->child_list, &(t->child_elem));
+#endif
+
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
   kf->eip = NULL;
@@ -467,6 +472,14 @@ init_thread (struct thread *t, const char *name, int priority)
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);
+
+#ifdef USERPROG
+  t->parent = NULL;
+  list_init(&t->child_list);
+  sema_init(&t->load_sema, 0);
+  sema_init(&t->wait_sema, 0);
+  t->is_waited = false;
+#endif
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -538,7 +551,11 @@ thread_schedule_tail (struct thread *prev)
   if (prev != NULL && prev->status == THREAD_DYING && prev != initial_thread) 
     {
       ASSERT (prev != cur);
+#ifdef USERPROG
+      // USERPROG에서는 부모가 process_wait()에서 해제
+#else
       palloc_free_page (prev);
+#endif
     }
 }
 
@@ -582,3 +599,25 @@ allocate_tid (void)
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+
+/* 현재 스레드의 자식 리스트에서 주어진 tid를 가진 자식 스레드를 찾아 반환, 
+찾지 못하면 NULL 반환 */
+struct thread* 
+get_child_thread(tid_t tid)
+{ 
+#ifdef USERPROG
+  struct thread *cur = thread_current ();
+  struct thread *child;
+  struct list_elem *e;
+
+  for(e = list_begin(&(cur->child_list)); e != list_end(&(cur->child_list));
+      e = list_next(e)) 
+  {
+    child = list_entry(e, struct thread, child_elem);
+    if(tid == child->tid) return child;
+  }
+#endif
+
+  return NULL;
+}
