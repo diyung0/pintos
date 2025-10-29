@@ -104,6 +104,8 @@ struct thread
     struct list_elem child_elem; // 부모의 child_list에 연결될 요소
     struct semaphore load_sema; // 로드 성공 여부 동기화
     struct semaphore wait_sema; // 프로세스 종료 동기화
+    struct semaphore free_sema; // 프로세스 자원 해제 동기화
+    bool load_success; // 로드 성공 여부
     bool is_waited; // 이미 wait 되었는지 표시
 
     struct file *fd_table[128]; // 파일 디스크립터 테이블

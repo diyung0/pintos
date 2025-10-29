@@ -478,6 +478,8 @@ init_thread (struct thread *t, const char *name, int priority)
   list_init(&t->child_list);
   sema_init(&t->load_sema, 0);
   sema_init(&t->wait_sema, 0);
+  sema_init(&t->free_sema, 0);
+  t->load_success = false;
   t->is_waited = false;
 
   memset(t->fd_table, 0, sizeof(t->fd_table));
@@ -555,11 +557,7 @@ thread_schedule_tail (struct thread *prev)
   if (prev != NULL && prev->status == THREAD_DYING && prev != initial_thread) 
     {
       ASSERT (prev != cur);
-#ifdef USERPROG
-      // USERPROG에서는 부모가 process_wait()에서 해제
-#else
       palloc_free_page (prev);
-#endif
     }
 }
 

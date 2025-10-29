@@ -5,6 +5,7 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "userprog/syscall.h"
+#include "threads/vaddr.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -149,7 +150,13 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
   
-  if (user && not_present) {
+  // 유저의 모든 page fault
+   if (user) {
+      exit(-1);
+   }
+   
+   // 커널이 유저 포인터 역참조 중 page fault (syscall에서 잘못된 유저 포인터 접근)
+   if (!user && is_user_vaddr(fault_addr)) {
       exit(-1);
    }
    

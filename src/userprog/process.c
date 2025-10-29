@@ -53,16 +53,15 @@ process_execute (const char *file_name)
 
   struct thread *child = get_child_thread(tid);
   if(child == NULL) {
-    palloc_free_page(fn_copy);
     return TID_ERROR;
   }
 
   // 자식의 load() 완료를 기다림
   sema_down(&child->load_sema);
 
-  if (child->exit_status == -1) {
+  if (child->load_success == false) {
     list_remove(&child->child_elem);
-    palloc_free_page(child);
+    child->parent = NULL;
     return TID_ERROR;
   }
 
@@ -85,17 +84,17 @@ start_process (void *file_name_)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
-  
-  /* If load failed, quit. */
+
   palloc_free_page (file_name);
+  cur->load_success = success;
+  sema_up(&cur->load_sema);
+
+  /* If load failed, quit. */
   if (!success) {
     cur->exit_status = -1;
-    sema_up(&cur->load_sema); // 로드 실패 알림
     thread_exit ();
   }
 
-  // 로드 성공 시 부모에게 알림
-  sema_up(&cur->load_sema);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -129,7 +128,8 @@ process_wait (tid_t child_tid UNUSED)
   sema_down(&(child->wait_sema)); // 자식이 종료될 때까지 대기
   exit_status = child->exit_status; 
   list_remove(&(child->child_elem)); // 자식을 child_list에서 제거
-  palloc_free_page(child);
+  
+  sema_up(&(child->free_sema)); // 자식이 자원 해제하도록 신호
 
   return exit_status;
 }
@@ -160,6 +160,7 @@ process_exit (void)
   // 부모가 wait 중이면 깨워줌
   if (cur->parent != NULL) {
     sema_up(&cur->wait_sema);
+    sema_down(&cur->free_sema); // 자식이 자원 해제할 때까지 대기
   }
 
   // 자식들 처리
@@ -471,7 +472,15 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if (fn_copy != NULL)
+    palloc_free_page (fn_copy);
+
+  if (!success) {
+    if (file != NULL) {
+      file_close (file);
+      t->exec_file = NULL;
+    }
+  }
   return success;
 }
 
