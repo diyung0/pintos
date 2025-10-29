@@ -140,6 +140,13 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
+  for (int fd = 2; fd < 128; fd++) {
+    if (cur->fd_table[fd] != NULL) {
+      file_close(cur->fd_table[fd]);
+      cur->fd_table[fd] = NULL;
+    }
+  }
+
   // exit status 출력
   printf("%s: exit(%d)\n", cur->name, cur->exit_status);
 

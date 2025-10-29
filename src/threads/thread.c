@@ -479,6 +479,10 @@ init_thread (struct thread *t, const char *name, int priority)
   sema_init(&t->load_sema, 0);
   sema_init(&t->wait_sema, 0);
   t->is_waited = false;
+
+  memset(t->fd_table, 0, sizeof(t->fd_table));
+  t->next_fd = 2;
+  t->exec_file = NULL;
 #endif
 }
 

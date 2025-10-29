@@ -105,6 +105,10 @@ struct thread
     struct semaphore load_sema; // 로드 성공 여부 동기화
     struct semaphore wait_sema; // 프로세스 종료 동기화
     bool is_waited; // 이미 wait 되었는지 표시
+
+    struct file *fd_table[128]; // 파일 디스크립터 테이블
+    int next_fd; // 다음 할당될 fd 번호
+    struct file *exec_file; // 실행 중인 파일
 #endif
 
     /* Owned by thread.c. */

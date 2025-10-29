@@ -11,6 +11,14 @@
 #include "lib/kernel/console.h"
 
 static void syscall_handler (struct intr_frame *);
+static int allocate_fd (struct file *file);
+static struct file *get_file (int fd);
+
+// 파일 디스크립터 범위 상수
+#define FD_MIN 2
+#define FD_MAX 128
+#define STDIN 0
+#define STDOUT 1
 
 void
 syscall_init (void) 
@@ -27,6 +35,25 @@ check_valid_uaddr (const void *uaddr)
   {
     exit (-1);
   }
+}
+
+static int allocate_fd (struct file *file) {
+  struct thread *t = thread_current();
+  if(t->next_fd >= FD_MAX) {
+    return -1;
+  }
+  int fd = t->next_fd;
+  t->fd_table[fd] = file;
+  t->next_fd++;
+  return fd;
+}
+
+static struct file *get_file (int fd) {
+  struct thread *t = thread_current();
+  if (fd < FD_MIN || fd >= FD_MAX) {
+    return NULL;
+  }
+  return t->fd_table[fd];
 }
 
 static void
