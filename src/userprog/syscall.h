@@ -17,4 +17,12 @@ int write (int fd, const void *buffer, unsigned size);
 int fibonacci (int n);
 int max_of_four_int (int a, int b, int c, int d);
 
+bool create (const char *file, unsigned initial_size);
+bool remove (const char *file);
+int open (const char *file);
+void close (int fd);
+int filesize (int fd);
+void seek (int fd, unsigned position);
+unsigned tell (int fd);
+
 #endif /* userprog/syscall.h */

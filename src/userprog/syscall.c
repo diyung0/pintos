@@ -9,6 +9,8 @@
 #include "userprog/process.h"
 #include "devices/input.h"
 #include "lib/kernel/console.h"
+#include "filesys/file.h"
+#include "filesys/filesys.h"
 
 static void syscall_handler (struct intr_frame *);
 static int allocate_fd (struct file *file);
@@ -129,6 +131,46 @@ syscall_handler (struct intr_frame *f UNUSED)
       check_valid_uaddr (esp + 4);
       f->eax = max_of_four_int(*(esp + 1), *(esp + 2), *(esp + 3), *(esp + 4));
       break;
+
+    case SYS_CREATE:
+      check_valid_uaddr (esp + 1);
+      check_valid_uaddr (esp + 2);
+      check_valid_uaddr ((void *) *(esp + 1));
+      f->eax = create ((const char *) *(esp + 1), *(esp + 2));
+      break;
+
+    case SYS_REMOVE:
+      check_valid_uaddr (esp + 1);
+      check_valid_uaddr ((void *) *(esp + 1));
+      f->eax = remove ((const char *) *(esp + 1));
+      break;
+
+    case SYS_OPEN:
+      check_valid_uaddr (esp + 1);
+      check_valid_uaddr ((void *) *(esp + 1));
+      f->eax = open ((const char *) *(esp + 1));
+      break;
+
+    case SYS_CLOSE:
+      check_valid_uaddr (esp + 1);
+      close (*(esp + 1));
+      break;
+
+    case SYS_FILESIZE:
+      check_valid_uaddr (esp + 1);
+      f->eax = filesize (*(esp + 1));
+      break;
+
+    case SYS_SEEK:
+      check_valid_uaddr (esp + 1);
+      check_valid_uaddr (esp + 2);
+      seek (*(esp + 1), *(esp + 2));
+      break;
+
+    case SYS_TELL:
+      check_valid_uaddr (esp + 1);
+      f->eax = tell (*(esp + 1));
+      break;
     
     default:
       exit (-1);
@@ -154,20 +196,36 @@ int wait(tid_t tid) {
 }
 
 int read (int fd, void *buffer, unsigned size) {
-  if (fd == 0) {
+  if (fd == STDIN) {
     uint8_t *buf = (uint8_t *) buffer;
     for (unsigned i = 0; i < size; i++) {
       buf[i] = input_getc ();
     }
     return size;
   }
+  if (fd >= 2) {
+    struct file *f = get_file(fd);
+    if (f == NULL) {
+      exit(-1);
+    }
+    int result = file_read (f, buffer, size);
+    return result;
+  }
   return -1;
 }
 
 int write (int fd, const void *buffer, unsigned size) {
-  if(fd == 1) {
+  if(fd == STDOUT) {
     putbuf(buffer, size);
     return size;
+  }
+  if (fd >= 2) {
+    struct file *f = get_file(fd);
+    if (f == NULL) {
+      exit(-1);
+    }
+    int result = file_write (f, buffer, size);
+    return result;
   }
   return -1;
 }
@@ -189,4 +247,59 @@ int max_of_four_int (int a, int b, int c, int d) {
   if(c > ans) ans = c;
   if(d > ans) ans = d;
   return ans;
+}
+
+bool create (const char *file, unsigned initial_size) {
+  bool result = filesys_create (file, initial_size);
+  return result;
+}
+
+bool remove (const char *file) {
+  bool result = filesys_remove (file);
+  return result;
+}
+
+int open (const char *file) {
+  struct file *f = filesys_open (file);
+  if (f == NULL) {
+    return -1;
+  }
+  int fd = allocate_fd (f);
+  return fd;
+}
+
+void close (int fd) {
+  struct file *f = get_file (fd);
+  if (f == NULL) {
+    exit(-1);
+  }
+  file_close (f);
+  thread_current()->fd_table[fd] = NULL;
+}
+
+int filesize (int fd) {
+  struct file *f = get_file (fd);
+  if (f == NULL) {
+    exit(-1);
+  }
+  int result = file_length (f);
+  return result;
+}
+
+void seek (int fd, unsigned position) {
+  struct file *f = get_file (fd);
+  if (f == NULL) {
+    exit(-1);
+  }
+  file_seek (f, position);
+}
+
+unsigned tell (int fd) {
+  struct file *f = get_file (fd);
+  if (f == NULL) {
+    lock_release(&filesys_lock);
+    exit(-1);
+  }
+  unsigned result = file_tell (f);
+  return result;
 }
