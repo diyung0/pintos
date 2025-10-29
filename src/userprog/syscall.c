@@ -9,6 +9,7 @@
 #include "userprog/process.h"
 #include "devices/input.h"
 #include "lib/kernel/console.h"
+#include "threads/synch.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 
@@ -22,9 +23,12 @@ static struct file *get_file (int fd);
 #define STDIN 0
 #define STDOUT 1
 
+struct lock filesys_lock;
+
 void
 syscall_init (void) 
 {
+  lock_init(&filesys_lock);
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
@@ -171,7 +175,7 @@ syscall_handler (struct intr_frame *f UNUSED)
       check_valid_uaddr (esp + 1);
       f->eax = tell (*(esp + 1));
       break;
-    
+      
     default:
       exit (-1);
       break;
@@ -196,37 +200,47 @@ int wait(tid_t tid) {
 }
 
 int read (int fd, void *buffer, unsigned size) {
+  lock_acquire(&filesys_lock);
   if (fd == STDIN) {
     uint8_t *buf = (uint8_t *) buffer;
     for (unsigned i = 0; i < size; i++) {
       buf[i] = input_getc ();
     }
+    lock_release(&filesys_lock);
     return size;
   }
   if (fd >= 2) {
     struct file *f = get_file(fd);
     if (f == NULL) {
+      lock_release(&filesys_lock);
       exit(-1);
     }
     int result = file_read (f, buffer, size);
+    lock_release(&filesys_lock);
     return result;
   }
+  lock_release(&filesys_lock);
   return -1;
 }
 
 int write (int fd, const void *buffer, unsigned size) {
+  lock_acquire(&filesys_lock);
   if(fd == STDOUT) {
     putbuf(buffer, size);
+    lock_release(&filesys_lock);
     return size;
   }
   if (fd >= 2) {
     struct file *f = get_file(fd);
     if (f == NULL) {
+      lock_release(&filesys_lock);
       exit(-1);
     }
     int result = file_write (f, buffer, size);
+    lock_release(&filesys_lock);
     return result;
   }
+  lock_release(&filesys_lock);
   return -1;
 }
 
@@ -250,56 +264,74 @@ int max_of_four_int (int a, int b, int c, int d) {
 }
 
 bool create (const char *file, unsigned initial_size) {
+  lock_acquire(&filesys_lock);
   bool result = filesys_create (file, initial_size);
+  lock_release(&filesys_lock);
   return result;
 }
 
 bool remove (const char *file) {
+  lock_acquire(&filesys_lock);
   bool result = filesys_remove (file);
+  lock_release(&filesys_lock);
   return result;
 }
 
 int open (const char *file) {
+  lock_acquire(&filesys_lock);
   struct file *f = filesys_open (file);
   if (f == NULL) {
+    lock_release(&filesys_lock);
     return -1;
   }
   int fd = allocate_fd (f);
+  lock_release(&filesys_lock);
   return fd;
 }
 
 void close (int fd) {
+  lock_acquire(&filesys_lock);
   struct file *f = get_file (fd);
   if (f == NULL) {
+    lock_release(&filesys_lock);
     exit(-1);
   }
   file_close (f);
   thread_current()->fd_table[fd] = NULL;
+  lock_release(&filesys_lock);
 }
 
 int filesize (int fd) {
+  lock_acquire(&filesys_lock);
   struct file *f = get_file (fd);
   if (f == NULL) {
+    lock_release(&filesys_lock);
     exit(-1);
   }
   int result = file_length (f);
+  lock_release(&filesys_lock);
   return result;
 }
 
 void seek (int fd, unsigned position) {
+  lock_acquire(&filesys_lock);
   struct file *f = get_file (fd);
   if (f == NULL) {
+    lock_release(&filesys_lock);
     exit(-1);
   }
   file_seek (f, position);
+  lock_release(&filesys_lock);
 }
 
 unsigned tell (int fd) {
+  lock_acquire(&filesys_lock);
   struct file *f = get_file (fd);
   if (f == NULL) {
     lock_release(&filesys_lock);
     exit(-1);
   }
   unsigned result = file_tell (f);
+  lock_release(&filesys_lock);
   return result;
 }

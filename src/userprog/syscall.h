@@ -3,6 +3,9 @@
 
 #include "threads/thread.h"
 
+// 전역 파일 시스템 락
+extern struct lock filesys_lock;
+
 void syscall_init (void);
 
 void check_valid_uaddr (const void *uaddr);

@@ -17,6 +17,7 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "userprog/syscall.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -145,6 +146,12 @@ process_exit (void)
       file_close(cur->fd_table[fd]);
       cur->fd_table[fd] = NULL;
     }
+  }
+
+  if (cur->exec_file != NULL) {
+    file_allow_write(cur->exec_file);
+    file_close(cur->exec_file);
+    cur->exec_file = NULL;
   }
 
   // exit status 출력
@@ -307,12 +314,20 @@ load (const char *file_name, void (**eip) (void), void **esp)
   char *program_name = argv[0];
   
   /* Open executable file. */
+  // 락 획득
+  lock_acquire(&filesys_lock);
+
   file = filesys_open (program_name);
   if (file == NULL) 
     {
+      lock_release(&filesys_lock); // 락 해제
       printf ("load: %s: open failed\n", program_name);
       goto done; 
     }
+
+  // 실행 중인 파일의 쓰기 금지
+  file_deny_write(file);
+  t->exec_file = file;
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -324,6 +339,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phnum > 1024) 
     {
       printf ("load: %s: error loading executable\n", program_name);
+      lock_release(&filesys_lock); // 락 해제
       goto done; 
     }
 
@@ -333,12 +349,16 @@ load (const char *file_name, void (**eip) (void), void **esp)
     {
       struct Elf32_Phdr phdr;
 
-      if (file_ofs < 0 || file_ofs > file_length (file))
+      if (file_ofs < 0 || file_ofs > file_length (file)) {
+        lock_release(&filesys_lock); // 락 해제
         goto done;
+      }
       file_seek (file, file_ofs);
 
-      if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
+      if (file_read (file, &phdr, sizeof phdr) != sizeof phdr) {
+        lock_release(&filesys_lock); // 락 해제
         goto done;
+      }
       file_ofs += sizeof phdr;
       switch (phdr.p_type) 
         {
@@ -352,6 +372,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
         case PT_DYNAMIC:
         case PT_INTERP:
         case PT_SHLIB:
+          lock_release(&filesys_lock); // 락 해제
           goto done;
         case PT_LOAD:
           if (validate_segment (&phdr, file)) 
@@ -377,14 +398,21 @@ load (const char *file_name, void (**eip) (void), void **esp)
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
               if (!load_segment (file, file_page, (void *) mem_page,
-                                 read_bytes, zero_bytes, writable))
+                                 read_bytes, zero_bytes, writable)) {
+                lock_release(&filesys_lock); // 락 해제
                 goto done;
+              }
             }
-          else
+          else {
+            lock_release(&filesys_lock); // 락 해제
             goto done;
+          }
           break;
         }
     }
+
+  // 락 해제
+  lock_release(&filesys_lock);
 
   /* Set up stack. */
   if (!setup_stack (esp))
