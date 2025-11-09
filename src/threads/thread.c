@@ -206,6 +206,10 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  // 새로운 스레드의 우선순위가 더 높다면, 현재 스레드는 ready 상태로 변경
+  if (priority > thread_current()->priority)
+    thread_yield();
+
   return tid;
 }
 
@@ -242,7 +246,7 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  thread_insert_ready_list(t);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -313,7 +317,7 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+    thread_insert_ready_list(cur);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -341,6 +345,18 @@ void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+
+  enum intr_level old_level = intr_disable ();
+
+  // 더 높은 우선순위의 스레드가 있다면 양보
+  if (!list_empty(&ready_list)) {
+    struct thread* highest_ready = list_entry(list_front(&ready_list), struct thread, elem);
+    
+    if (highest_ready->priority > new_priority)
+      thread_yield ();
+  }
+
+  intr_set_level (old_level);
 }
 
 /* Returns the current thread's priority. */
@@ -622,4 +638,20 @@ get_child_thread(tid_t tid)
 #endif
 
   return NULL;
+}
+
+/* 스레드 우선순위 비교 함수 */
+bool
+thread_priority_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  struct thread *ta = list_entry(a, struct thread, elem);
+  struct thread *tb = list_entry(b, struct thread, elem);
+  return ta->priority > tb->priority;
+}
+
+/* ready_list에 스레드 우선순위가 높은 순서로 삽입 */
+void
+thread_insert_ready_list (struct thread *t)
+{
+  list_insert_ordered(&ready_list, &t->elem, thread_priority_compare, NULL);
 }

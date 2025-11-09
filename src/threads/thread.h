@@ -156,5 +156,7 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
 struct thread* get_child_thread(tid_t tid);
+bool thread_priority_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+void thread_insert_ready_list (struct thread *t);
 
 #endif /* threads/thread.h */
