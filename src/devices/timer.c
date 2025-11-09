@@ -8,6 +8,8 @@
 #include "threads/synch.h"
 #include "threads/thread.h"
   
+static struct list sleep_list;
+
 /* See [8254] for hardware details of the 8254 timer chip. */
 
 #if TIMER_FREQ < 19
@@ -35,6 +37,7 @@ static void real_time_delay (int64_t num, int32_t denom);
 void
 timer_init (void) 
 {
+  list_init(&sleep_list);
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 }
@@ -92,8 +95,20 @@ timer_sleep (int64_t ticks)
   int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+  
+  struct thread *cur = thread_current();
+  enum intr_level old_level;
+
+  ASSERT (!intr_context());
+
+  old_level = intr_disable();  
+  if (ticks > 0) {
+    cur->wake_up_time = start + ticks;
+    list_push_back(&sleep_list, &cur->elem);
+    thread_block();
+  }
+  
+  intr_set_level(old_level);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -171,6 +186,22 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
+
+  if (!list_empty(&sleep_list)) {
+    struct list_elem *e = list_begin(&sleep_list);
+
+    while (e != list_end(&sleep_list)) {
+      struct thread *t = list_entry(e, struct thread, elem);
+      struct list_elem *next = list_next(e);
+      
+      if (ticks >= t->wake_up_time) {
+        list_remove(e);
+        thread_unblock(t);
+      }
+      e = next;
+    }
+  }
+  
   thread_tick ();
 }
 
