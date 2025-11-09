@@ -113,10 +113,17 @@ sema_up (struct semaphore *sema)
   ASSERT (sema != NULL);
 
   old_level = intr_disable ();
-  if (!list_empty (&sema->waiters)) 
+  if (!list_empty (&sema->waiters)) {
+    // waiters 리스트를 우선순위 순으로 정렬
+    list_sort(&sema->waiters, thread_priority_compare, NULL);
+    // 가장 높은 우선순위 스레드를 꺼내서 깨움
     thread_unblock (list_entry (list_pop_front (&sema->waiters),
                                 struct thread, elem));
+  }
   sema->value++;
+
+  // 현재 스레드보다 높은 우선순위 스레드가 깨어났으면 양보할 수 있도록 함
+  thread_yield();
   intr_set_level (old_level);
 }
 
