@@ -11,9 +11,7 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
-#ifdef USERPROG
-#include "userprog/process.h"
-#endif
+#include "devices/timer.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -53,6 +51,11 @@ static long long user_ticks;    /* # of timer ticks in user programs. */
 /* Scheduling. */
 #define TIME_SLICE 4            /* # of timer ticks to give each thread. */
 static unsigned thread_ticks;   /* # of timer ticks since last yield. */
+
+#ifndef USERPROG
+/* Project #3. */
+bool thread_prior_aging;
+#endif
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
@@ -137,6 +140,12 @@ thread_tick (void)
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
     intr_yield_on_return ();
+
+  #ifndef USERPROG
+    /* Project #3. */
+    if (thread_prior_aging == true)
+      thread_aging ();
+  #endif
 }
 
 /* Prints thread statistics. */
@@ -654,4 +663,16 @@ void
 thread_insert_ready_list (struct thread *t)
 {
   list_insert_ordered(&ready_list, &t->elem, thread_priority_compare, NULL);
+}
+
+void thread_aging (void)
+{
+  struct list_elem *e = list_begin (&ready_list);
+  while (e != list_end (&ready_list)) {
+    struct thread *t = list_entry (e, struct thread, elem);
+    if (t->priority < PRI_MAX) {
+      t->priority++;
+    }
+    e = list_next (e);
+  }
 }

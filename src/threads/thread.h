@@ -4,7 +4,12 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
-#include "synch.h"
+#include "threads/synch.h" /* Project #3. */
+
+#ifndef USERPROG
+/* Project #3. */
+extern bool thread_prior_aging;
+#endif
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -158,5 +163,6 @@ int thread_get_load_avg (void);
 struct thread* get_child_thread(tid_t tid);
 bool thread_priority_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
 void thread_insert_ready_list (struct thread *t);
+void thread_aging (void);
 
 #endif /* threads/thread.h */
