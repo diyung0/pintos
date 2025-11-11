@@ -6,6 +6,19 @@
 #include <stdint.h>
 #include "threads/synch.h" /* Project #3. */
 
+#define F (1 << 14)
+#define INT_TO_FP(n) ((n) * F)
+#define FP_TO_INT(x) ((x) / F)
+#define FP_TO_INT_ROUND(x) ((x) >= 0 ? ((x) + F/2) / F : ((x) - F/2) / F)
+#define ADD_FP(x,y) ((x) + (y))
+#define SUB_FP(x,y) ((x) - (y))
+#define ADD_MIX(x,n) ((x) + (n) * F)
+#define SUB_MIX(x,n) ((x) - (n) * F)
+#define MULT_FP(x,y) (((int64_t)(x)) * (y) / F)
+#define MULT_MIX(x,n) ((x) * (n))
+#define DIV_FP(x,y) (((int64_t)(x)) * F / (y))
+#define DIV_MIX(x,n) ((x) / (n))
+
 #ifndef USERPROG
 /* Project #3. */
 extern bool thread_prior_aging;
@@ -95,11 +108,13 @@ struct thread
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
     struct list_elem allelem;           /* List element for all threads list. */
-
+ 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
-
-    int64_t wake_up_time;            
+    
+    int64_t wake_up_time;
+    int nice;
+    int recent_cpu;
     
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
