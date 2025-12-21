@@ -2,6 +2,7 @@
 #define USERPROG_SYSCALL_H
 
 #include "threads/thread.h"
+#include "vm/mmap.h"
 
 // 전역 파일 시스템 락
 extern struct lock filesys_lock;
@@ -27,5 +28,8 @@ void close (int fd);
 int filesize (int fd);
 void seek (int fd, unsigned position);
 unsigned tell (int fd);
+
+mapid_t sys_mmap(int fd, void *addr);
+void sys_munmap(mapid_t mapping);
 
 #endif /* userprog/syscall.h */

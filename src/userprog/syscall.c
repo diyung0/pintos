@@ -12,6 +12,9 @@
 #include "threads/synch.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
+#include "vm/page.h"
+#include "vm/stack.h"
+#include "vm/mmap.h"
 
 static void syscall_handler (struct intr_frame *);
 static int allocate_fd (struct file *file);
@@ -35,12 +38,27 @@ syscall_init (void)
 void
 check_valid_uaddr (const void *uaddr) 
 {
-  if (uaddr == NULL || 
-      !is_user_vaddr (uaddr) ||
-      pagedir_get_page (thread_current ()->pagedir, uaddr) == NULL) 
-  {
+  
+  if (uaddr == NULL || !is_user_vaddr (uaddr)) {
     exit (-1);
   }
+
+  struct thread *t = thread_current();
+
+  void *page = pg_round_down(uaddr);
+
+  // 이미 로드된 페이지
+  if (pagedir_get_page(t->pagedir, page) != NULL) {
+    return;
+  }
+
+  // SPT에 있는 페이지
+  struct page_table_entry *pte = spt_find(&t->spt, page);
+  if (pte != NULL) {
+    return;
+  }
+
+  exit (-1);
 }
 
 static int allocate_fd (struct file *file) {
@@ -60,6 +78,31 @@ static struct file *get_file (int fd) {
     return NULL;
   }
   return t->fd_table[fd];
+}
+
+static void preload_buffer_write(void *buffer, unsigned size) {
+  if (buffer == NULL || size == 0) {
+    return;
+  }
+  
+  struct thread *t = thread_current();
+  
+  for (void *upage = pg_round_down(buffer); 
+       upage <= pg_round_down(buffer + size - 1); 
+       upage += PGSIZE) {
+    
+    // SPT 확인
+    struct page_table_entry *pte = spt_find(&t->spt, upage);
+    
+    // writable이 아니면 exit
+    if (pte != NULL && !pte->writable) {
+      exit(-1);
+    }
+    
+    // 읽기만으로 페이지 로드
+    volatile uint8_t dummy = *(uint8_t*)upage;
+    (void)dummy;
+  }
 }
 
 static void
@@ -175,7 +218,18 @@ syscall_handler (struct intr_frame *f UNUSED)
       check_valid_uaddr (esp + 1);
       f->eax = tell (*(esp + 1));
       break;
-      
+
+    case SYS_MMAP:
+      check_valid_uaddr (esp + 1);
+      check_valid_uaddr (esp + 2);
+      f->eax = sys_mmap(*(esp + 1), (void *) *(esp + 2));
+      break;
+
+    case SYS_MUNMAP:
+      check_valid_uaddr (esp + 1);
+      sys_munmap(*(esp + 1));
+      break;
+
     default:
       exit (-1);
       break;
@@ -200,47 +254,46 @@ int wait(tid_t tid) {
 }
 
 int read (int fd, void *buffer, unsigned size) {
-  lock_acquire(&filesys_lock);
   if (fd == STDIN) {
     uint8_t *buf = (uint8_t *) buffer;
     for (unsigned i = 0; i < size; i++) {
       buf[i] = input_getc ();
     }
-    lock_release(&filesys_lock);
     return size;
   }
   if (fd >= 2) {
     struct file *f = get_file(fd);
     if (f == NULL) {
-      lock_release(&filesys_lock);
       exit(-1);
     }
+    preload_buffer_write(buffer, size);
+
+    lock_acquire(&filesys_lock);
     int result = file_read (f, buffer, size);
     lock_release(&filesys_lock);
     return result;
   }
-  lock_release(&filesys_lock);
   return -1;
 }
 
 int write (int fd, const void *buffer, unsigned size) {
-  lock_acquire(&filesys_lock);
   if(fd == STDOUT) {
+    preload_buffer_write(buffer, size);
+
     putbuf(buffer, size);
-    lock_release(&filesys_lock);
     return size;
   }
   if (fd >= 2) {
     struct file *f = get_file(fd);
     if (f == NULL) {
-      lock_release(&filesys_lock);
       exit(-1);
     }
+
+    lock_acquire(&filesys_lock);
     int result = file_write (f, buffer, size);
     lock_release(&filesys_lock);
     return result;
   }
-  lock_release(&filesys_lock);
   return -1;
 }
 
@@ -280,58 +333,91 @@ bool remove (const char *file) {
 int open (const char *file) {
   lock_acquire(&filesys_lock);
   struct file *f = filesys_open (file);
+  lock_release(&filesys_lock);
+
   if (f == NULL) {
-    lock_release(&filesys_lock);
     return -1;
   }
   int fd = allocate_fd (f);
-  lock_release(&filesys_lock);
   return fd;
 }
 
 void close (int fd) {
-  lock_acquire(&filesys_lock);
   struct file *f = get_file (fd);
   if (f == NULL) {
-    lock_release(&filesys_lock);
     exit(-1);
   }
+  lock_acquire(&filesys_lock);
   file_close (f);
-  thread_current()->fd_table[fd] = NULL;
   lock_release(&filesys_lock);
+  thread_current()->fd_table[fd] = NULL;
 }
 
 int filesize (int fd) {
-  lock_acquire(&filesys_lock);
   struct file *f = get_file (fd);
   if (f == NULL) {
-    lock_release(&filesys_lock);
     exit(-1);
   }
+  lock_acquire(&filesys_lock);
   int result = file_length (f);
   lock_release(&filesys_lock);
   return result;
 }
 
 void seek (int fd, unsigned position) {
-  lock_acquire(&filesys_lock);
   struct file *f = get_file (fd);
   if (f == NULL) {
-    lock_release(&filesys_lock);
     exit(-1);
   }
+  lock_acquire(&filesys_lock);
   file_seek (f, position);
   lock_release(&filesys_lock);
 }
 
 unsigned tell (int fd) {
-  lock_acquire(&filesys_lock);
   struct file *f = get_file (fd);
   if (f == NULL) {
-    lock_release(&filesys_lock);
     exit(-1);
   }
+  lock_acquire(&filesys_lock);
   unsigned result = file_tell (f);
   lock_release(&filesys_lock);
   return result;
+}
+
+mapid_t sys_mmap(int fd, void *addr) {
+  if (fd == 0 || fd == 1 || addr == 0 || pg_ofs(addr) != 0 || !is_user_vaddr(addr)) {
+    return -1;
+  }
+
+  struct file *file = get_file(fd);
+  if (file == NULL) {
+    return -1;
+  }
+
+  lock_acquire(&filesys_lock);
+  off_t file_len = file_length(file);
+  lock_release(&filesys_lock);
+  if (file_len == 0) {
+    return -1;
+  }
+
+  if (check_mmap_overlap(addr, file_len)) {
+      return -1;
+  }
+
+  lock_acquire(&filesys_lock);
+  struct file *reopened_file = file_reopen(file);
+  lock_release(&filesys_lock);
+  if (reopened_file == NULL) {
+    return -1;
+  }
+
+  bool writable = true; 
+  mapid_t mapid = mmap_insert(reopened_file, fd, addr, file_len, writable);
+  return mapid;
+}
+
+void sys_munmap(mapid_t mapping) {
+  mmap_munmap(thread_current(), mapping);
 }
