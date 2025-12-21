@@ -18,6 +18,9 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/syscall.h"
+#include "vm/page.h"
+#include "vm/frame.h"
+#include "threads/malloc.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -77,6 +80,10 @@ start_process (void *file_name_)
   struct intr_frame if_;
   bool success;
   struct thread *cur = thread_current();
+
+#ifdef VM
+  spt_init(&cur->spt);
+#endif
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -141,6 +148,11 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
+  // exit status 출력
+  printf("%s: exit(%d)\n", cur->name, cur->exit_status);
+ 
+  lock_acquire(&filesys_lock);
+
   for (int fd = 2; fd < 128; fd++) {
     if (cur->fd_table[fd] != NULL) {
       file_close(cur->fd_table[fd]);
@@ -154,8 +166,18 @@ process_exit (void)
     cur->exec_file = NULL;
   }
 
-  // exit status 출력
-  printf("%s: exit(%d)\n", cur->name, cur->exit_status);
+  lock_release(&filesys_lock);
+  
+  #ifdef VM
+    // MMAP 정리 (파일 write back 및 파일 닫기)
+    mmap_unmap_all(cur);
+    
+    // Frame 정리 (물리 메모리 해제)
+    frame_clear_owner(cur);
+    
+    // SPT 정리 (메타데이터만 정리, frame은 이미 해제됨)
+    spt_destroy(&cur->spt);
+  #endif
 
   // 부모가 wait 중이면 깨워줌
   if (cur->parent != NULL) {
@@ -315,13 +337,13 @@ load (const char *file_name, void (**eip) (void), void **esp)
   char *program_name = argv[0];
   
   /* Open executable file. */
-  // 락 획득
   lock_acquire(&filesys_lock);
 
   file = filesys_open (program_name);
+  lock_release(&filesys_lock);
+  
   if (file == NULL) 
     {
-      lock_release(&filesys_lock); // 락 해제
       printf ("load: %s: open failed\n", program_name);
       goto done; 
     }
@@ -340,7 +362,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phnum > 1024) 
     {
       printf ("load: %s: error loading executable\n", program_name);
-      lock_release(&filesys_lock); // 락 해제
       goto done; 
     }
 
@@ -351,13 +372,11 @@ load (const char *file_name, void (**eip) (void), void **esp)
       struct Elf32_Phdr phdr;
 
       if (file_ofs < 0 || file_ofs > file_length (file)) {
-        lock_release(&filesys_lock); // 락 해제
         goto done;
       }
       file_seek (file, file_ofs);
 
       if (file_read (file, &phdr, sizeof phdr) != sizeof phdr) {
-        lock_release(&filesys_lock); // 락 해제
         goto done;
       }
       file_ofs += sizeof phdr;
@@ -373,7 +392,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
         case PT_DYNAMIC:
         case PT_INTERP:
         case PT_SHLIB:
-          lock_release(&filesys_lock); // 락 해제
           goto done;
         case PT_LOAD:
           if (validate_segment (&phdr, file)) 
@@ -400,20 +418,15 @@ load (const char *file_name, void (**eip) (void), void **esp)
                 }
               if (!load_segment (file, file_page, (void *) mem_page,
                                  read_bytes, zero_bytes, writable)) {
-                lock_release(&filesys_lock); // 락 해제
                 goto done;
               }
             }
           else {
-            lock_release(&filesys_lock); // 락 해제
             goto done;
           }
           break;
         }
     }
-
-  // 락 해제
-  lock_release(&filesys_lock);
 
   /* Set up stack. */
   if (!setup_stack (esp))
@@ -477,7 +490,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
   if (!success) {
     if (file != NULL) {
+      lock_acquire(&filesys_lock);
       file_close (file);
+      lock_release(&filesys_lock);
       t->exec_file = NULL;
     }
   }
@@ -555,7 +570,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
-  file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
     {
       /* Calculate how to fill this page.
@@ -564,30 +578,45 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-      /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
-      if (kpage == NULL)
+      struct page_table_entry *pte = malloc(sizeof(struct page_table_entry));
+      if (pte == NULL)
         return false;
+      
+      memset(pte, 0, sizeof(*pte));
+      pte->upage = upage;
+      pte->kpage = NULL;
+      pte->is_loaded = false;
+      pte->type = PAGE_BINARY;
+      pte->original_type = PAGE_BINARY;
 
-      /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
+      lock_acquire(&filesys_lock);
+      pte->file = file_reopen(file);
+      lock_release(&filesys_lock);
+      if (pte->file == NULL) {
+        free(pte);
+        return false;
+      }
 
-      /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
+      pte->file_offset = ofs;
+      pte->read_bytes = page_read_bytes;
+      pte->zero_bytes = page_zero_bytes;
+      pte->writable = writable;
+
+      pte->swap_slot = 0; 
+
+      if (!spt_insert(&thread_current()->spt, pte)) {
+        lock_acquire(&filesys_lock);
+        file_close(pte->file);
+        lock_release(&filesys_lock);
+        free(pte);
+        return false;
+      }
 
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
+      ofs += page_read_bytes;
     }
   return true;
 }

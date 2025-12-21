@@ -3,8 +3,10 @@
 
 #include <debug.h>
 #include <list.h>
+#include <hash.h>
 #include <stdint.h>
 #include "threads/synch.h" /* Project #3. */
+#include "vm/page.h"
 
 #define F (1 << 14)
 #define INT_TO_FP(n) ((n) * F)
@@ -115,7 +117,12 @@ struct thread
     int64_t wake_up_time;
     int nice;
     int recent_cpu;
-    
+#ifdef VM
+    struct hash spt;
+    struct list mmap_list;
+    mapid_t next_mapid;
+#endif    
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */

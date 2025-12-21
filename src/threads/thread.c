@@ -12,6 +12,7 @@
 #include "threads/synch.h"
 #include "threads/vaddr.h"
 #include "devices/timer.h"
+#include "vm/page.h"
 
 static int load_avg;
 
@@ -610,6 +611,12 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
+
+#ifdef VM
+  t->spt.buckets = NULL;
+  list_init(&t->mmap_list);
+  t->next_mapid = 0;
+#endif
   
   if (running_thread() == initial_thread) {
     t->nice = 0;
