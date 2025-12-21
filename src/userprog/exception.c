@@ -6,12 +6,21 @@
 #include "threads/thread.h"
 #include "userprog/syscall.h"
 #include "threads/vaddr.h"
+#include "vm/page.h"
+#include "vm/frame.h"
+#include "filesys/file.h"
+#include <string.h>
+#include "threads/palloc.h"
+#include "userprog/pagedir.h"
+#include "vm/swap.h"
+#include "vm/stack.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
 
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
+static bool handle_mm_fault (struct page_table_entry *pte, bool write);
 
 /* Registers handlers for interrupts that can be caused by user
    programs.
@@ -150,16 +159,38 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
   
-  // 유저의 모든 page fault
-   if (user) {
-      exit(-1);
-   }
-   
-   // 커널이 유저 포인터 역참조 중 page fault (syscall에서 잘못된 유저 포인터 접근)
-   if (!user && is_user_vaddr(fault_addr)) {
-      exit(-1);
-   }
-   
+  // 사용자 주소 공간의 페이지 폴트 처리
+  if (is_user_vaddr(fault_addr)) {
+    void *fault_page = pg_round_down(fault_addr);
+    struct thread *t = thread_current();
+    
+    if (not_present) {
+      // Not-present 페이지 폴트
+      struct page_table_entry *pte = spt_find(&t->spt, fault_page);
+
+      if (pte != NULL) {
+        // 이미 매핑된 페이지: demand paging
+        if (handle_mm_fault(pte, write)) {
+          return;
+        }
+      } else {
+        // 매핑되지 않은 페이지: 스택 확장 시도
+        if (user && is_valid_stack_access(fault_addr, f->esp)) {
+          if (grow_stack(fault_page)) {
+            return;
+          }
+        }
+      } 
+    } else {
+     
+    }
+  }
+  
+  // 커널 모드에서의 페이지 폴트
+  if (!user) {
+    exit(-1);
+  }
+
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
@@ -168,7 +199,78 @@ page_fault (struct intr_frame *f)
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel");
-  kill (f);
-
+  exit(-1);
 }
 
+static bool
+handle_mm_fault (struct page_table_entry *pte, bool write) 
+{
+  if (write && !pte->writable) {
+    return false;
+  }
+  
+  if (pte->is_loaded) {
+    return true;
+  }
+  
+  void *frame = get_frame(PAL_USER, pte->upage);
+  if (frame == NULL) {
+    return false;
+  }
+  
+  bool success = true;
+  switch (pte->type) {
+    case PAGE_BINARY:
+      file_seek(pte->file, pte->file_offset);
+      int bytes_read = file_read(pte->file, frame, pte->read_bytes);
+      if (bytes_read != (int)pte->read_bytes) {
+        success = false;
+      } else {
+        memset(frame + pte->read_bytes, 0, pte->zero_bytes);
+      }
+      break;
+      
+    case PAGE_SWAP:
+      if (pte->swap_slot == 0) {
+        success = false;
+        break;
+      }    
+      swap_in(pte->swap_slot, frame);
+      pte->swap_slot = 0;
+      pte->type = pte->original_type;
+      break;
+      
+    case PAGE_STACK:
+      memset(frame, 0, PGSIZE);
+      break;
+      
+    case PAGE_MMAP:
+      file_seek(pte->file, pte->file_offset);
+      bytes_read = file_read(pte->file, frame, pte->read_bytes);
+      if (bytes_read != (int)pte->read_bytes) {
+        success = false;
+      } else {
+        memset(frame + pte->read_bytes, 0, pte->zero_bytes);
+      }
+      break;
+      
+    default:
+      success = false;
+      break;
+  }
+  
+  if (!success) {
+    free_frame(frame);
+    return false;
+  }
+  
+  if (!pagedir_set_page(thread_current()->pagedir, pte->upage, frame, pte->writable)) {
+    free_frame(frame);
+    return false;
+  }
+  
+  pte->kpage = frame;
+  pte->is_loaded = true;
+  
+  return true;
+}
